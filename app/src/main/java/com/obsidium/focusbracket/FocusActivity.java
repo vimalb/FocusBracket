@@ -20,7 +20,7 @@ import java.util.LinkedList;
 
 public class FocusActivity extends BaseActivity implements SurfaceHolder.Callback, CameraEx.ShutterListener
 {
-    private static final int COUNTDOWN_SECONDS = 5;
+    private static final int COUNTDOWN_TICKS = 3;
 
     private SurfaceHolder       m_surfaceHolder;
     private CameraEx            m_camera;
@@ -146,22 +146,28 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         setState(State.setMin);
     }
 
+    private int burstIndex = 0;
+
     // CameraEx.ShutterListener
     @Override
     public void onShutter(int i, CameraEx cameraEx)
     {
+        burstIndex = burstIndex - 1;
+
         // i: 0 = success, 1 = canceled, 2 = error
         Logger.info("onShutter (i " + i + ")");
         m_camera.cancelTakePicture();
-        if (i == 0)
+
+        if(burstIndex > 0) {
+            m_camera.burstableTakePicture();
+        } else if (i == 0)
         {
             m_focusQueue.removeFirst();
             if (m_focusQueue.isEmpty())
             {
                 m_tvMsg.setText("\uE013 Done!");
                 m_tvMsg.setVisibility(View.VISIBLE);
-                m_tvInstructions.setText("Press \uE04C to start over...");
-                m_tvInstructions.setVisibility(View.VISIBLE);
+                setState(State.shoot);
             }
             else
             {
@@ -176,6 +182,7 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         m_tvMsg.setVisibility(View.GONE);
         m_tvInstructions.setVisibility(View.GONE);
         m_waitingForFocus = false;
+        burstIndex = 3;
         m_camera.burstableTakePicture();
     }
 
@@ -183,6 +190,7 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
     {
         final int nextFocus = m_focusQueue.getFirst();
         m_focusBeforeDrive = m_curFocus;
+        m_tvMsg.setText("Focusing..."+m_curFocus);
         if (m_curFocus == nextFocus)
         {
             Logger.info("Taking picture (focus)");
@@ -192,12 +200,8 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         {
             final int absDiff = Math.abs(m_curFocus - nextFocus);
             final int speed;
-            if (absDiff > 25)
+            if (absDiff > 5)
                 speed = 4;
-            else if (absDiff > 20)
-                speed = 3;
-            else if (absDiff > 15)
-                speed = 2;
             else
                 speed = 1;
             Logger.info("Starting focus drive (speed " + speed + ")");
@@ -290,8 +294,6 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
     {
         final Camera.Parameters params = m_camera.createEmptyParameters();
         final CameraEx.ParametersModifier modifier = m_camera.createParametersModifier(params);
-        params.setSceneMode(CameraEx.ParametersModifier.SCENE_MODE_MANUAL_EXPOSURE);
-        modifier.setDriveMode(CameraEx.ParametersModifier.DRIVE_MODE_SINGLE);
         params.setFocusMode(CameraEx.ParametersModifier.FOCUS_MODE_MANUAL);
         modifier.setSelfTimer(0);
         m_camera.getNormalCamera().setParameters(params);
@@ -346,8 +348,8 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
                 break;
             case shoot:
                 initFocusQueue();
-                m_countdown = COUNTDOWN_SECONDS;
-                m_handler.postDelayed(m_countDownRunnable, 1000);
+                m_countdown = COUNTDOWN_TICKS;
+                m_handler.postDelayed(m_countDownRunnable, 500);
                 break;
         }
         initControlsFromState();
