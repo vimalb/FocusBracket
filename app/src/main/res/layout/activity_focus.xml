@@ -17,7 +17,7 @@
         tools:text="Msg"
         android:id="@+id/tvMsg"
         android:layout_centerVertical="true"
-        android:textSize="40dp"
+        android:textSize="25dp"
         android:textColor="@android:color/white"
         android:background="#64000000"
         android:gravity="center_horizontal"/>
@@ -26,8 +26,8 @@
         android:layout_width="fill_parent"
         android:layout_height="wrap_content"
         android:textAppearance="?android:attr/textAppearanceLarge"
-        tools:text="Instructions"
-        android:id="@+id/tvInstructions"
+        tools:text="Status"
+        android:id="@+id/tvStatus"
         android:layout_alignParentTop="true"
         android:layout_centerHorizontal="true"
         android:singleLine="false"
@@ -38,41 +38,5 @@
         android:ellipsize="none"
         android:gravity="center_horizontal"
         android:paddingBottom="4dp"/>
-
-    <LinearLayout
-        android:orientation="horizontal"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginLeft="32dp"
-        android:layout_marginRight="32dp"
-        android:layout_marginBottom="10dp"
-        android:layout_alignParentBottom="true"
-        android:layout_centerHorizontal="true"
-        android:id="@+id/lFocusScale">
-
-        <ImageView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:id="@+id/ivLeft"
-            android:layout_marginRight="4dp"
-            />
-
-        <com.obsidium.focusbracket.FocusScaleView
-            android:layout_width="wrap_content"
-            android:layout_height="20dp"
-            android:id="@+id/vFocusScale"
-            android:layout_centerHorizontal="true"
-            android:layout_alignParentBottom="true"
-            tools:background="#32722f"
-            android:layout_weight="1"/>
-
-        <ImageView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:id="@+id/ivRight"
-            android:layout_marginLeft="4dp"
-            />
-
-    </LinearLayout>
 
 </RelativeLayout>

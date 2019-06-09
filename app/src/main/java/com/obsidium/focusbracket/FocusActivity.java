@@ -6,8 +6,6 @@ import android.os.Handler;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.github.ma1co.pmcademo.app.BaseActivity;
@@ -15,12 +13,23 @@ import com.sony.scalar.hardware.CameraEx;
 import com.sony.scalar.sysutil.ScalarProperties;
 
 import java.io.IOException;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedList;
+import java.util.List;
 
 public class FocusActivity extends BaseActivity implements SurfaceHolder.Callback, CameraEx.ShutterListener
 {
     private static final int COUNTDOWN_TICKS = 3;
+    private static final int COUNTDOWN_DELAY_MS = 250;
+
+    private class ExposureRequest {
+        public int targetFocus;
+        public int targetExposure;
+        public ExposureRequest(int targetFocus, int targetExposure) {
+            this.targetFocus = targetFocus;
+            this.targetExposure = targetExposure;
+        }
+    }
 
     private SurfaceHolder       m_surfaceHolder;
     private CameraEx            m_camera;
@@ -29,23 +38,22 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
 
     private Handler             m_handler = new Handler();
 
-    private FocusScaleView      m_focusScaleView;
-    private LinearLayout        m_lFocusScale;
     private TextView            m_tvMsg;
-    private TextView            m_tvInstructions;
+    private TextView            m_tvStatus;
 
-    enum State { error, setMin, setMax, setNumPics, shoot }
-    private State               m_state = State.setMin;
+    private ShootSettings       m_shootSettings = new ShootSettings();
 
-    private int                 m_minFocus;
-    private int                 m_maxFocus;
+    enum State { error, config, shoot }
+    private State               m_state = State.config;
+
+    enum SelectedControl { Shoot, AddFocusPoint, RemoveFocusPoint, SetExposureBracket }
+    private SelectedControl     m_selectedControl = SelectedControl.Shoot;
+
+
     private int                 m_curFocus;
     private int                 m_focusBeforeDrive;
 
-    private ArrayList<Integer>  m_pictureCounts;
-    private int                 m_pictureCountIndex;
-
-    private LinkedList<Integer> m_focusQueue;
+    private LinkedList<ExposureRequest> m_focusQueue;
     private boolean             m_waitingForFocus;
 
     private int                 m_countdown;
@@ -57,7 +65,7 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
             if (--m_countdown > 0)
             {
                 m_tvMsg.setText(String.format("Starting in %d...", m_countdown));
-                m_handler.postDelayed(this, 1000);
+                m_handler.postDelayed(this, COUNTDOWN_DELAY_MS);
             }
             else
             {
@@ -77,10 +85,6 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         }
     };
 
-    // Built-in images
-    private static final int p_16_dd_parts_rec_focuscontrol_near = 0x01080ddd;
-    private static final int p_16_dd_parts_rec_focuscontrol_far = 0x010807f9;
-
     @Override
     protected void onCreate(Bundle savedInstanceState)
     {
@@ -94,12 +98,8 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         m_surfaceHolder = surfaceView.getHolder();
         m_surfaceHolder.setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
 
-        m_focusScaleView = (FocusScaleView)findViewById(R.id.vFocusScale);
-
-        m_lFocusScale = (LinearLayout)findViewById(R.id.lFocusScale);
-
         m_tvMsg = (TextView)findViewById(R.id.tvMsg);
-        m_tvInstructions = (TextView)findViewById(R.id.tvInstructions);
+        m_tvStatus = (TextView)findViewById(R.id.tvStatus);
     }
 
     @Override
@@ -111,11 +111,6 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         m_autoReviewControl = new CameraEx.AutoPictureReviewControl();
         m_camera.setAutoPictureReviewControl(m_autoReviewControl);
 
-        //noinspection ResourceType
-        ((ImageView)findViewById(R.id.ivRight)).setImageResource(p_16_dd_parts_rec_focuscontrol_far);
-        //noinspection ResourceType
-        ((ImageView)findViewById(R.id.ivLeft)).setImageResource(p_16_dd_parts_rec_focuscontrol_near);
-
         m_camera.setShutterListener(this);
 
         m_camera.setFocusDriveListener(new CameraEx.FocusDriveListener()
@@ -125,12 +120,11 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
             {
                 Logger.info("FocusDriveListener: currentPosition " + focusPosition.currentPosition);
                 m_handler.removeCallbacks(m_checkFocusRunnable);
-                m_focusScaleView.setMaxPosition(focusPosition.maxPosition);
-                m_focusScaleView.setCurPosition(focusPosition.currentPosition);
                 m_curFocus = focusPosition.currentPosition;
                 if (m_waitingForFocus)
                 {
-                    if (m_curFocus == m_focusQueue.getFirst())
+                    ExposureRequest currentExposureRequest = m_focusQueue.getFirst();
+                    if (m_curFocus == currentExposureRequest.targetFocus)
                     {
                         // Focused, take picture
                         Logger.info("Taking picture (FocusDriveListener)");
@@ -139,34 +133,27 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
                     else
                         focus();
                 }
+                updateDisplay();
             }
         });
 
         setDefaults();
-        setState(State.setMin);
+        m_shootSettings = SettingSaver.load();
+        setState(State.config);
     }
-
-    private int burstIndex = 0;
 
     // CameraEx.ShutterListener
     @Override
     public void onShutter(int i, CameraEx cameraEx)
     {
-        burstIndex = burstIndex - 1;
-
         // i: 0 = success, 1 = canceled, 2 = error
         Logger.info("onShutter (i " + i + ")");
         m_camera.cancelTakePicture();
-
-        if(burstIndex > 0) {
-            m_camera.burstableTakePicture();
-        } else if (i == 0)
+        if (i == 0)
         {
             m_focusQueue.removeFirst();
             if (m_focusQueue.isEmpty())
             {
-                m_tvMsg.setText("\uE013 Done!");
-                m_tvMsg.setVisibility(View.VISIBLE);
                 setState(State.shoot);
             }
             else
@@ -175,22 +162,37 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
                 startFocusing();
             }
         }
+        updateDisplay();
+    }
+
+    private void setExposureCompensation(int exposureCompensationSteps) {
+        final Camera.Parameters params = m_camera.createEmptyParameters();
+        params.setExposureCompensation(exposureCompensationSteps);
+        m_camera.getNormalCamera().setParameters(params);
+    }
+
+    private void setFocusMode(String value) {
+        final Camera.Parameters params = m_camera.createEmptyParameters();
+        params.setFocusMode(value);
+        m_camera.getNormalCamera().setParameters(params);
+
     }
 
     private void takePicture()
     {
-        m_tvMsg.setVisibility(View.GONE);
-        m_tvInstructions.setVisibility(View.GONE);
+        ExposureRequest currentExposureRequest = m_focusQueue.getFirst();
+        setExposureCompensation(currentExposureRequest.targetExposure);
+
         m_waitingForFocus = false;
-        burstIndex = 3;
         m_camera.burstableTakePicture();
+        updateDisplay();
     }
 
     private void focus()
     {
-        final int nextFocus = m_focusQueue.getFirst();
+        final ExposureRequest nextExposureRequest = m_focusQueue.getFirst();
+        final int nextFocus = nextExposureRequest.targetFocus;
         m_focusBeforeDrive = m_curFocus;
-        m_tvMsg.setText("Focusing..."+m_curFocus);
         if (m_curFocus == nextFocus)
         {
             Logger.info("Taking picture (focus)");
@@ -200,25 +202,24 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         {
             final int absDiff = Math.abs(m_curFocus - nextFocus);
             final int speed;
-            if (absDiff > 5)
+            if (absDiff > 4) {
+                speed = 7;
+            } else {
                 speed = 4;
-            else
-                speed = 1;
+            }
             Logger.info("Starting focus drive (speed " + speed + ")");
             m_camera.startOneShotFocusDrive(m_curFocus < nextFocus ? CameraEx.FOCUS_DRIVE_DIRECTION_FAR : CameraEx.FOCUS_DRIVE_DIRECTION_NEAR, speed);
             // startOneShotFocusDrive won't always trigger our FocusDriveListener
             m_handler.postDelayed(m_checkFocusRunnable, 50);
         }
+        updateDisplay();
     }
 
     private void startFocusing()
     {
         m_waitingForFocus = true;
-        m_tvMsg.setText("Focusing...");
-        m_tvMsg.setVisibility(View.VISIBLE);
-        m_tvInstructions.setText(String.format("%d remaining", m_focusQueue.size()));
-        m_tvInstructions.setVisibility(View.VISIBLE);
         focus();
+        updateDisplay();
     }
 
     private void startShooting()
@@ -229,74 +230,63 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
 
     private void initFocusQueue()
     {
-        m_focusQueue = new LinkedList<Integer>();
-        final int focusDiff = m_maxFocus - m_minFocus;
-        final int pictureCount = m_pictureCounts.get(m_pictureCountIndex);
-        final int step = (int)((float)focusDiff / (float)(pictureCount - 1));
-        for (int i = 0, focus = m_minFocus; i < pictureCount; ++i, focus += step)
-            m_focusQueue.addFirst(focus);
-    }
-
-    private void initPictureCounts()
-    {
-        m_pictureCounts = new ArrayList<Integer>();
-        final int focusDiff = m_maxFocus - m_minFocus;
-        int lastStep = 0;
-        for (int i = 3; i < focusDiff; ++i)
-        {
-            final int step = (int)((float)focusDiff / (float)(i - 1));
-            if (step > 1 && step != lastStep)
-            {
-                m_pictureCounts.add(i);
-                lastStep = step;
+        m_focusQueue = new LinkedList<ExposureRequest>();
+        for(int focusPoint : m_shootSettings.focusPoints) {
+            m_focusQueue.addFirst(new ExposureRequest(focusPoint, 0));
+            if(m_shootSettings.exposureBracket > 0) {
+                m_focusQueue.addFirst(new ExposureRequest(focusPoint, m_shootSettings.exposureBracket));
+                m_focusQueue.addFirst(new ExposureRequest(focusPoint, -1*m_shootSettings.exposureBracket));
             }
         }
-        m_pictureCounts.add(focusDiff);
-        m_pictureCountIndex = 0;
     }
 
-    private void updatePictureCountMsg()
+    private void updateDisplay()
     {
-        m_tvMsg.setText(String.valueOf(m_pictureCounts.get(m_pictureCountIndex)));
-    }
+        if(m_state == State.config) {
+            StringBuilder focusPointSummary = new StringBuilder();
+            focusPointSummary.append("Focus points:");
+            for(Integer focusPoint: m_shootSettings.focusPoints) {
+                focusPointSummary.append(" ");
+                focusPointSummary.append(focusPoint);
+            }
 
-    private void initControlsFromState()
-    {
-        switch (m_state)
-        {
-            case setMin:
-                m_tvMsg.setVisibility(View.GONE);
-                m_lFocusScale.setVisibility(View.VISIBLE);
-                m_focusScaleView.setMinPosition(0);
-                m_tvInstructions.setVisibility(View.VISIBLE);
-                m_tvInstructions.setText("Set minimum focus distance, \uE04C to confirm");
-                break;
-            case setMax:
-                m_tvInstructions.setText("Set maximum focus distance, \uE04C to confirm");
-                break;
-            case setNumPics:
-                m_tvInstructions.setText("Use dial to select number of pictures, \uE04C to confirm");
-                m_tvMsg.setVisibility(View.VISIBLE);
-                m_lFocusScale.setVisibility(View.GONE);
-                break;
-            case shoot:
-                m_tvMsg.setVisibility(View.VISIBLE);
-                m_tvMsg.setText(String.format("Starting in %d...", m_countdown));
-                m_tvInstructions.setVisibility(View.GONE);
-                break;
+            double exposureComp = new Integer(m_shootSettings.exposureBracket).doubleValue() / 3.0;
+            String exposureBracketSummary = String.format("Exposure bracket steps: %.1f EV",exposureComp);
+
+            m_tvStatus.setVisibility(View.VISIBLE);
+            m_tvMsg.setVisibility(View.VISIBLE);
+            if(m_selectedControl == SelectedControl.SetExposureBracket) {
+                m_tvStatus.setText("Scroll wheel to "+m_selectedControl.name());
+                m_tvMsg.setText(exposureBracketSummary);
+            } else if(m_selectedControl == SelectedControl.AddFocusPoint || m_selectedControl == SelectedControl.RemoveFocusPoint) {
+                m_tvStatus.setText("Press control button to "+m_selectedControl.name());
+                m_tvMsg.setText(focusPointSummary.toString()+"\n\n"+"Current point: "+m_curFocus);
+            } else if(m_selectedControl == SelectedControl.Shoot) {
+                m_tvStatus.setText("Press control button to "+m_selectedControl.name());
+                m_tvMsg.setText(focusPointSummary.toString()+"\n\n"+"Exposure bracket steps: "+m_shootSettings.exposureBracket);
+            }
+
+        } else if(m_state == State.shoot) {
+            int shotsLeft = m_shootSettings.focusPoints.size();
+            if(m_focusQueue != null) {
+                shotsLeft = m_focusQueue.size();
+            }
+
+            m_tvStatus.setVisibility(View.VISIBLE);
+            m_tvStatus.setText("Focus: "+m_curFocus+" Shots Remaining: "+shotsLeft);
+
+            m_tvMsg.setVisibility(View.GONE);
+
         }
     }
 
+
     /*
-        Sets camera default parameters (manual mode, single shooting, manual focus, picture review)
+        Sets camera default parameters (manual focus)
      */
     private void setDefaults()
     {
-        final Camera.Parameters params = m_camera.createEmptyParameters();
-        final CameraEx.ParametersModifier modifier = m_camera.createParametersModifier(params);
-        params.setFocusMode(CameraEx.ParametersModifier.FOCUS_MODE_MANUAL);
-        modifier.setSelfTimer(0);
-        m_camera.getNormalCamera().setParameters(params);
+        setFocusMode(CameraEx.ParametersModifier.FOCUS_MODE_MANUAL);
 
         /*
             modifier.isFocusDriveSupported() returns false on ILCE-5100, focus drive is working anyway...
@@ -328,50 +318,62 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         m_handler.removeCallbacks(m_checkFocusRunnable);
         m_handler.removeCallbacks(m_countDownRunnable);
         m_focusQueue = null;
-        m_pictureCounts = null;
     }
 
     private void setState(State state)
     {
         m_state = state;
-        switch (m_state)
-        {
-            case setMin:
-                m_minFocus = 0;
-                break;
-            case setMax:
-                m_maxFocus = 0;
-                break;
-            case setNumPics:
-                initPictureCounts();
-                updatePictureCountMsg();
-                break;
-            case shoot:
-                initFocusQueue();
-                m_countdown = COUNTDOWN_TICKS;
-                m_handler.postDelayed(m_countDownRunnable, 500);
-                break;
+        if(m_state == State.config) {
+        } else if(m_state == State.shoot) {
+            SettingSaver.save(m_shootSettings);
+            initFocusQueue();
+            m_countdown = COUNTDOWN_TICKS;
+            m_handler.postDelayed(m_countDownRunnable, COUNTDOWN_DELAY_MS);
         }
-        initControlsFromState();
+        updateDisplay();
     }
 
     @Override
     protected boolean onUpperDialChanged(int value)
     {
-        if (m_state == State.setNumPics)
-        {
-            if (value < 0)
-            {
-                if (m_pictureCountIndex > 0)
-                    --m_pictureCountIndex;
+        if(m_state == State.config) {
+            if(m_selectedControl == SelectedControl.SetExposureBracket) {
+                if(value < 0) {
+                    m_shootSettings.exposureBracket = Math.max(m_shootSettings.exposureBracket - 1, 0);
+                } else {
+                    m_shootSettings.exposureBracket = Math.min(9, m_shootSettings.exposureBracket + 1);
+                }
             }
-            else
-            {
-                if (m_pictureCountIndex < m_pictureCounts.size() - 1)
-                    ++m_pictureCountIndex;
-            }
-            updatePictureCountMsg();
         }
+        updateDisplay();
+        return true;
+    }
+
+    @Override
+    protected boolean onUpKeyDown()
+    {
+        List<SelectedControl> allSelectedControls = Arrays.asList(SelectedControl.values());
+        int selectedIndex = allSelectedControls.indexOf(m_selectedControl);
+        if(selectedIndex == 0) {
+            m_selectedControl = allSelectedControls.get(allSelectedControls.size() - 1);
+        } else {
+            m_selectedControl = allSelectedControls.get(selectedIndex - 1);
+        }
+        updateDisplay();
+        return true;
+    }
+
+    @Override
+    protected boolean onDownKeyDown()
+    {
+        List<SelectedControl> allSelectedControls = Arrays.asList(SelectedControl.values());
+        int selectedIndex = allSelectedControls.indexOf(m_selectedControl);
+        if(selectedIndex == (allSelectedControls.size() - 1)) {
+            m_selectedControl = allSelectedControls.get(0);
+        } else {
+            m_selectedControl = allSelectedControls.get(selectedIndex + 1);
+        }
+        updateDisplay();
         return true;
     }
 
@@ -381,32 +383,24 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         return true;
     }
 
+
+
     @Override
     protected boolean onEnterKeyDown()
     {
-        // Don't use onEnterKeyUp - we sometimes get an onEnterKeyUp event when launching the app
-        switch (m_state)
-        {
-            case setMin:
-                m_minFocus = m_curFocus;
-                m_focusScaleView.setMinPosition(m_curFocus);
-                setState(State.setMax);
-                break;
-            case setMax:
-                if (m_curFocus > m_minFocus)
-                {
-                    m_maxFocus = m_curFocus;
-                    setState(State.setNumPics);
-                }
-                break;
-            case setNumPics:
+        if(m_state == State.config) {
+            if(m_selectedControl == SelectedControl.AddFocusPoint) {
+                m_shootSettings.focusPoints.add(m_curFocus);
+            } else if(m_selectedControl == SelectedControl.RemoveFocusPoint && m_shootSettings.focusPoints.size() > 0) {
+                m_shootSettings.focusPoints.remove(m_shootSettings.focusPoints.size() - 1);
+            } else if(m_selectedControl == SelectedControl.Shoot) {
                 setState(State.shoot);
-                break;
-            case shoot:
-                abortShooting();
-                setState(State.setMin);
-                break;
+            }
+        } else if(m_state == State.shoot) {
+            abortShooting();
+            setState(State.config);
         }
+        updateDisplay();
         return true;
     }
 
@@ -423,6 +417,8 @@ public class FocusActivity extends BaseActivity implements SurfaceHolder.Callbac
         super.onPause();
 
         abortShooting();
+        setFocusMode(CameraEx.ParametersModifier.AUTO_FOCUS_MODE_AF_S);
+        setExposureCompensation(0);
 
         m_surfaceHolder.removeCallback(this);
         m_autoReviewControl.setPictureReviewTime(m_pictureReviewTime);
